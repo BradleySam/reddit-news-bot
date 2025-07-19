@@ -33,7 +33,7 @@ const (
 )
 
 func main() {
-	// Load .env for local development
+	// Load environment variables from .env
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("No .env file found — assuming environment variables are already set.")
@@ -45,6 +45,13 @@ func main() {
 
 	if slackWebhook == "" || hfAPIKey == "" {
 		log.Fatal("Missing SLACK_WEBHOOK_URL or HUGGINGFACE_API_KEY in environment")
+	}
+
+	// Send the date as the first Slack message
+	currentDate := time.Now().Format("🗓️ January 2, 2006")
+	err = postToSlack(slackWebhook, currentDate)
+	if err != nil {
+		log.Fatalf("Error posting date to Slack: %v", err)
 	}
 
 	// Fetch top Reddit news stories
@@ -64,7 +71,7 @@ func main() {
 		}(story)
 	}
 
-	// Wait for all goroutines to finish
+	// Wait for all summaries to be processed
 	wg.Wait()
 }
 
@@ -80,12 +87,8 @@ func processStory(story Story, hfAPIKey, slackWebhook string) {
 		return
 	}
 
-	// Format Slack message (Option B: block quote)
-	message := fmt.Sprintf(
-		"*Title:* %s\n> %s\n\n---",
-		story.Title,
-		summary,
-	)
+	// Format Slack message (no separator line, no links)
+	message := fmt.Sprintf("*Title:* %s\n> %s", story.Title, summary)
 
 	// Send to Slack
 	err = postToSlack(slackWebhook, message)
