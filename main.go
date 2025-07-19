@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -32,13 +33,13 @@ const (
 )
 
 func main() {
-	// Load environment variables from .env for local development
+	// Load .env for local development
 	err := godotenv.Load()
 	if err != nil {
 		log.Println("No .env file found — assuming environment variables are already set.")
 	}
 
-	// Get credentials from environment
+	// Get API credentials
 	slackWebhook := os.Getenv("SLACK_WEBHOOK_URL")
 	hfAPIKey := os.Getenv("HUGGINGFACE_API_KEY")
 
@@ -46,41 +47,54 @@ func main() {
 		log.Fatal("Missing SLACK_WEBHOOK_URL or HUGGINGFACE_API_KEY in environment")
 	}
 
-	// Fetch the top stories
+	// Fetch top Reddit news stories
 	stories, err := fetchTopStories(summaryLimit)
 	if err != nil {
 		log.Fatalf("Failed to fetch stories: %v", err)
 	}
 
-	// Loop through each story and process
-	for i, story := range stories {
-		// Combine title and link for summarization input
-		text := fmt.Sprintf("%s - %s", story.Title, story.Link)
+	var wg sync.WaitGroup
 
-		// Summarize the story
-		summary, err := summarizeWithHuggingFace(hfAPIKey, text)
-		if err != nil {
-			log.Printf("Error summarizing story %d: %v", i+1, err)
-			continue
-		}
+	// Launch goroutines for each story
+	for _, story := range stories {
+		wg.Add(1)
+		go func(s Story) {
+			defer wg.Done()
+			processStory(s, hfAPIKey, slackWebhook)
+		}(story)
+	}
 
-		// Build Slack message (without hyperlink)
-		message := fmt.Sprintf(
-			"📌 *Story %d*\n*Title:* %s\n*Summary:* %s\n\n---",
-			i+1,
-			story.Title,
-			summary,
-		)
+	// Wait for all goroutines to finish
+	wg.Wait()
+}
 
-		// Send to Slack
-		err = postToSlack(slackWebhook, message)
-		if err != nil {
-			log.Printf("Error posting to Slack: %v", err)
-		}
+// processStory handles summarization and Slack posting for a single story
+func processStory(story Story, hfAPIKey, slackWebhook string) {
+	// Combine title and link for summarization input
+	text := fmt.Sprintf("%s - %s", story.Title, story.Link)
+
+	// Summarize the story using Hugging Face
+	summary, err := summarizeWithHuggingFace(hfAPIKey, text)
+	if err != nil {
+		log.Printf("Error summarizing '%s': %v", story.Title, err)
+		return
+	}
+
+	// Format Slack message (Option B: block quote)
+	message := fmt.Sprintf(
+		"*Title:* %s\n> %s\n\n---",
+		story.Title,
+		summary,
+	)
+
+	// Send to Slack
+	err = postToSlack(slackWebhook, message)
+	if err != nil {
+		log.Printf("Error posting to Slack: %v", err)
 	}
 }
 
-// fetchTopStories fetches the top N Reddit news stories from the RSS feed
+// fetchTopStories pulls N top stories from Reddit's RSS feed
 func fetchTopStories(limit int) ([]Story, error) {
 	fp := gofeed.NewParser()
 	feed, err := fp.ParseURL(redditRSS)
@@ -101,7 +115,7 @@ func fetchTopStories(limit int) ([]Story, error) {
 	return stories, nil
 }
 
-// summarizeWithHuggingFace sends the given text to Hugging Face and returns a summary
+// summarizeWithHuggingFace uses the Hugging Face inference API to summarize text
 func summarizeWithHuggingFace(apiKey, text string) (string, error) {
 	body, _ := json.Marshal(map[string]string{"inputs": text})
 
@@ -131,7 +145,7 @@ func summarizeWithHuggingFace(apiKey, text string) (string, error) {
 	return "Summary unavailable", nil
 }
 
-// postToSlack sends the given message to the specified Slack webhook URL
+// postToSlack sends a formatted message to the Slack webhook
 func postToSlack(webhookURL, message string) error {
 	payload := SlackPayload{Text: message}
 	data, _ := json.Marshal(payload)
